@@ -1,0 +1,29 @@
+# البيئات الوهمية والكاش
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# نماذج الذكاء الاصطناعي الضخمة
+*.onnx
+*.onnx.json
+*.bin
+spk_model/
+piper/
+vosk-model*/
+
+# الملفات المضغوطة (التي تستهلك مساحة هائلة)
+*.tar.gz
+*.tar.gz.1
+*.zip
+
+# قواعد البيانات والملفات الصوتية المؤقتة للتجارب
+*.db
+temp_audio.wav
+jarvis_cmd.wav
+test_vad.wav
+mic_test.wav
+my_voice.wav
+
+# ملفات النظام المؤقتة
+.DS_Store

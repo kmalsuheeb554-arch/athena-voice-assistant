@@ -1,0 +1,96 @@
+import subprocess
+import ollama
+import yt_dlp
+import os
+
+def download_audio(query):
+    print(f"\nجارفيس: جاري  '{query}'... 🎵\n")
+    desktop_music_dir = os.path.expanduser("~/Desktop/music")
+    os.makedirs(desktop_music_dir, exist_ok=True)
+    
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+        'outtmpl': os.path.join(desktop_music_dir, '%(title)s.%(ext)s'),
+        'noplaylist': True
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([f"ytsearch1:{query}"])
+        print(f"\nجارفيس: تم التحميل وحفظه في مجلد music.")
+    except Exception as e:
+        print(f"\nجارفيس: حدث خطأ أثناء التحميل: {e}")
+
+def play_audio_instantly(query):
+    print(f"\nجارفيس: جاري البحث والتشغيل الفوري لـ '{query}' 🎧...\n")
+    try:
+        # استخراج رابط الصوت المباشر عبر yt-dlp لضمان التشغيل السريع والصحيح
+        ydl_opts = {'format': 'bestaudio', 'quiet': True, 'noplaylist': True}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+            if 'entries' in info:
+                stream_url = info['entries'][0]['url']
+            else:
+                stream_url = info['url']
+        
+        # تشغيل الرابط المباشر مباشرة عبر mpv
+        subprocess.Popen(['mpv', stream_url])
+    except Exception as e:
+        print(f"\nجارفيس: حدث خطأ أثناء التشغيل الفوري: {e}")
+
+print("\n=== نظام جارفيس الذكي ===")
+print("الأوامر المتاحة: تشغيل مباشر (شغل اغنية...) | تحميل (نزل اغنية...)\n")
+
+SYSTEM_PROMPT = """أنت وكيل ذكي لجهاز المستخدم.
+القواعد الصارمة:
+1. لفتح تطبيق اكتب فقط: RUN: اسم_البرنامج
+2. لتحميل أغنية وحفظها اكتب فقط: DOWNLOAD: اسم_الطلب
+3. لتشغيل أغنية فوراً بدون تحميل اكتب فقط: PLAY: اسم_الطلب
+4. إذا كان سؤالاً عادياً، أجب باللغة العربية طبيعياً.
+لا تكتب أي مقدمات مع أوامر RUN و DOWNLOAD و PLAY.
+"""
+
+while True:
+    try:
+        user_input = input("أنت: ")
+        
+        if user_input.strip().lower() in ['خروج', 'exit', 'quit']:
+            break
+            
+        if user_input.strip():
+            response = ollama.generate(
+                model='qwen2.5:1.5b',
+                prompt=user_input,
+                system=SYSTEM_PROMPT
+            )
+            
+            reply = response['response'].strip()
+            reply_upper = reply.upper()
+            
+            if "RUN:" in reply_upper:
+                idx = reply_upper.find("RUN:") + 4
+                command = reply[idx:].replace(">", "").replace("<", "").strip()
+                print(f"\nجارفيس: جاري تشغيل التطبيق '{command}' ⚙️\n")
+                subprocess.Popen([command], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                
+            elif "DOWNLOAD:" in reply_upper:
+                idx = reply_upper.find("DOWNLOAD:") + 9
+                song_name = reply[idx:].replace(">", "").replace("<", "").strip()
+                download_audio(song_name)
+                
+            elif "PLAY:" in reply_upper:
+                idx = reply_upper.find("PLAY:") + 5
+                song_name = reply[idx:].replace(">", "").replace("<", "").strip()
+                play_audio_instantly(song_name)
+                
+            else:
+                print(f"\nجارفيس: {reply}\n")
+                
+    except KeyboardInterrupt:
+        break
+    except Exception as e:
+        print(f"\n[خطأ]: {e}\n")
