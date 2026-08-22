@@ -12,13 +12,11 @@ import tempfile
 import pyaudio
 import numpy as np
 import torch
-import soundfile as sf 
+import soundfile as sf
 import glob
 import jellyfish
-# 🌟 استدعاء المكتبات الذكية للسرعة واللفظ
 
 from rapidfuzz import process, fuzz
-
 from typing import Tuple, Any
 from openwakeword.model import Model
 from faster_whisper import WhisperModel
@@ -191,13 +189,17 @@ class CommandHandler:
         return "other", "ask", None
 
 # ==========================================
-# 2. منفذ الإجراءات (Actions)
+# 2. منفذ الإجراءات (Actions) - مُعزز بذاكرة التخزين المؤقت (Cache)
 # ==========================================
-
-
 class Actions:
-    # 🌟 متغير الكاش لحفظ التطبيقات في الرام (RAM)
     _gui_apps_cache = None 
+
+    @staticmethod
+    def run_cmd(cmd: str) -> bool:
+        try:
+            return subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+        except:
+            return False
 
     @staticmethod
     def get_installed_gui_apps():
@@ -207,10 +209,10 @@ class Actions:
 
         # 2. إذا كانت هذه أول مرة، نقوم بقراءة القرص الصلب
         apps = {}
-        # نبحث في مسار النظام ومسار المستخدم
         directories = [
             '/usr/share/applications',
-            os.path.expanduser('~/.local/share/applications')
+            os.path.expanduser('~/.local/share/applications'),
+            '/var/lib/snapd/desktop/applications'
         ]
         
         for directory in directories:
@@ -221,20 +223,18 @@ class Actions:
                 try:
                     with open(filepath, 'r', encoding='utf-8') as f:
                         content = f.read()
-                        # تجاهل التطبيقات المخفية
-                        if 'NoDisplay=true' in content:
+                        if 'NoDisplay=true' in content or "Hidden=true" in content:
                             continue
                         
-                        name_line = next((line for line in content.split('\n') if line.startswith('Name=')), None)
-                        exec_line = next((line for line in content.split('\n') if line.startswith('Exec=')), None)
+                        name_match = re.search(r"^Name=(.+)$", content, re.MULTILINE)
+                        exec_match = re.search(r"^Exec=([^\s%]+)", content, re.MULTILINE) 
                         
-                        if name_line and exec_line:
-                            name = name_line.split('=')[1].strip().lower()
-                            # تنظيف مسار التشغيل من الرموز الإضافية مثل %U أو %F
-                            command = exec_line.split('=')[1].strip().split(' %')[0]
-                            apps[name] = command
+                        if name_match and exec_match:
+                            friendly_name = name_match.group(1).lower().strip()
+                            exec_cmd = exec_match.group(1).strip().split("/")[-1] 
+                            apps[friendly_name] = exec_cmd
                 except Exception:
-                    continue # تجاهل الملفات المعطوبة بأمان
+                    continue
                     
         # 3. حفظ النتيجة في الكاش للأبد طوال فترة تشغيل أثينا
         Actions._gui_apps_cache = apps
@@ -242,9 +242,40 @@ class Actions:
 
     @staticmethod
     def open_app(app: str):
-        # الآن هذه الدالة ستستدعي الكاش فوراً وبدون أي بطء!
+        search_name = app.lower().strip()
+        
+        global semantic_matcher
+        if semantic_matcher:
+            target_process, score = semantic_matcher.find_best_match(search_name)
+            if target_process:
+                subprocess.Popen(target_process, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return f"Opening {app}, sir."
+
+        # الدالة المحسنة الآن تستدعي الـ Cache
         gui_apps = Actions.get_installed_gui_apps()
-        # ... (باقي كود فتح التطبيق الخاص بك كما هو) ...
+        best_match = process.extractOne(search_name, gui_apps.keys(), scorer=fuzz.WRatio)
+        actual_cmd = None
+        matched_name = None
+        
+        if best_match and best_match[1] >= 65:
+            matched_name = best_match[0]
+            actual_cmd = gui_apps[matched_name]
+        else:
+            query_phonetic = jellyfish.metaphone(search_name)
+            for app_name, cmd in gui_apps.items():
+                if jellyfish.metaphone(app_name) == query_phonetic:
+                    matched_name = app_name
+                    actual_cmd = cmd
+                    break
+
+        if actual_cmd:
+            subprocess.Popen(actual_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return f"Opening {matched_name.title()}, sir."
+
+        file_check = Actions.open_file(app)
+        if "Opening file" in file_check: return file_check
+            
+        return f"I couldn't find an app or file named {app}, sir."
 
     @staticmethod
     def music(action: str, song_name: str = None):
@@ -332,64 +363,6 @@ class Actions:
             return "Window closed, sir."
 
     @staticmethod
-    def get_installed_gui_apps():
-        apps = {}
-        desktop_dirs = ["/usr/share/applications", os.path.expanduser("~/.local/share/applications"), "/var/lib/snapd/desktop/applications"]
-
-        for directory in desktop_dirs:
-            if not os.path.exists(directory): continue
-            for filename in os.listdir(directory):
-                if filename.endswith(".desktop"):
-                    try:
-                        with open(os.path.join(directory, filename), "r", encoding="utf-8") as f:
-                            content = f.read()
-                            if "NoDisplay=true" in content or "Hidden=true" in content: continue 
-                            name_match = re.search(r"^Name=(.+)$", content, re.MULTILINE)
-                            exec_match = re.search(r"^Exec=([^\s%]+)", content, re.MULTILINE) 
-                            if name_match and exec_match:
-                                friendly_name = name_match.group(1).lower().strip()
-                                exec_cmd = exec_match.group(1).strip().split("/")[-1] 
-                                apps[friendly_name] = exec_cmd
-                    except Exception: continue
-        return apps
-
-    @staticmethod
-    def open_app(app: str):
-        search_name = app.lower().strip()
-        
-        global semantic_matcher
-        if semantic_matcher:
-            target_process, score = semantic_matcher.find_best_match(search_name)
-            if target_process:
-                subprocess.Popen(target_process, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return f"Opening {app}, sir."
-
-        gui_apps = Actions.get_installed_gui_apps()
-        best_match = process.extractOne(search_name, gui_apps.keys(), scorer=fuzz.WRatio)
-        actual_cmd = None
-        matched_name = None
-        
-        if best_match and best_match[1] >= 65:
-            matched_name = best_match[0]
-            actual_cmd = gui_apps[matched_name]
-        else:
-            query_phonetic = jellyfish.metaphone(search_name)
-            for app_name, cmd in gui_apps.items():
-                if jellyfish.metaphone(app_name) == query_phonetic:
-                    matched_name = app_name
-                    actual_cmd = cmd
-                    break
-
-        if actual_cmd:
-            subprocess.Popen(actual_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return f"Opening {matched_name.title()}, sir."
-
-        file_check = Actions.open_file(app)
-        if "Opening file" in file_check: return file_check
-            
-        return f"I couldn't find an app or file named {app}, sir."
-
-    @staticmethod
     def close_app(app: str):
         search_name = app.lower().strip()
         user_uid = str(os.getuid())
@@ -470,42 +443,57 @@ class Actions:
         return f"I couldn't find a file named {filename}, sir."
 
 # ==========================================
-# 2.5 محرك الذكاء الاصطناعي (Ollama LLM)
+# 2.5 محرك الذكاء الاصطناعي (Ollama LLM) - مُحصن بـ (Thread-Safe Lock)
 # ==========================================
 class OllamaInterface:
     chat_history = []
-    
+    _history_lock = threading.Lock() # 🌟 قفل حماية الذاكرة المشتركة
+    _translation_ready = False
+
+    @staticmethod
+    def append_to_history(role: str, content: str):
+        with OllamaInterface._history_lock:
+            OllamaInterface.chat_history.append({"role": role, "content": content})
+            if len(OllamaInterface.chat_history) > 7:
+                # الحفاظ على الهوية (الرسالة الأولى) وآخر 6 رسائل
+                OllamaInterface.chat_history = [OllamaInterface.chat_history[0]] + OllamaInterface.chat_history[-6:]
+
+    @staticmethod
+    def clear_memory():
+        with OllamaInterface._history_lock:
+            OllamaInterface.chat_history.clear()
+
+    @staticmethod
+    def get_history():
+        # استخراج نسخة آمنة لا تتغير أثناء المعالجة
+        with OllamaInterface._history_lock:
+            return list(OllamaInterface.chat_history)
+            
     @staticmethod
     def ask(prompt: str) -> str:
         MODEL_NAME = "qwen2.5:1.5b" 
         url = "http://localhost:11434/api/chat"
         
-        if not OllamaInterface.chat_history:
-            OllamaInterface.chat_history.append({"role": "system", "content": "You are Jarvis, a smart AI assistant. Answer in english clearly, naturally, and in MAXIMUM 2 sentences."})
+        with OllamaInterface._history_lock:
+            if not OllamaInterface.chat_history:
+                OllamaInterface.chat_history.append({"role": "system", "content": "You are Jarvis, a smart AI assistant. Answer in english clearly, naturally, and in MAXIMUM 2 sentences."})
             
-        OllamaInterface.chat_history.append({"role": "user", "content": prompt})
-        
-        if len(OllamaInterface.chat_history) > 7:
-            OllamaInterface.chat_history = [OllamaInterface.chat_history[0]] + OllamaInterface.chat_history[-6:]
+        OllamaInterface.append_to_history("user", prompt)
         
         try:
             options = {"num_thread": 3}
-            response = requests.post(url, json={"model": MODEL_NAME, "messages": OllamaInterface.chat_history, "stream": False, "options": options}, timeout=20)
+            # نمرر النسخة الآمنة من المحادثات لتجنب التلوث السريع
+            safe_history = OllamaInterface.get_history()
+            response = requests.post(url, json={"model": MODEL_NAME, "messages": safe_history, "stream": False, "options": options}, timeout=20)
+            
             if response.status_code == 200:
                 ai_response = response.json().get("message", {}).get("content", "").strip()
-                OllamaInterface.chat_history.append({"role": "assistant", "content": ai_response})
+                OllamaInterface.append_to_history("assistant", ai_response)
                 return ai_response
             return "Sorry, I had trouble processing that thought."
         except Exception: 
             return "Sir, Ollama is currently offline."
             
-    @staticmethod
-    class OllamaInterface:
-     chat_history = []
-    _translation_ready = False # 🌟 متغير للتحقق من جاهزية القواميس المحلية
-    
-    # ... (دالة ask ودالة clear_memory تبقى كما هي) ...
-
     @staticmethod
     def translate(text: str) -> str:
         try:
@@ -514,7 +502,6 @@ class OllamaInterface:
         except ImportError:
             return "Sir, please install the offline translator via terminal: pip install argostranslate"
 
-        # 🌟 فحص وتنزيل القواميس (يحدث لمرة واحدة فقط في العمر)
         if not OllamaInterface._translation_ready:
             installed_packages = argostranslate.package.get_installed_packages()
             has_en_ar = any(p.from_code == 'en' and p.to_code == 'ar' for p in installed_packages)
@@ -537,7 +524,6 @@ class OllamaInterface:
                 
             OllamaInterface._translation_ready = True
 
-        # 🌟 تنفيذ الترجمة اللحظية (0ms)
         try:
             if re.search(r'[\u0600-\u06FF]', text):
                 return argostranslate.translate.translate(text, 'ar', 'en')
@@ -965,21 +951,17 @@ class DynamicPill(QWidget):
         color = self.border_color
         r, g, b, a = color.red(), color.green(), color.blue(), color.alpha()
 
-        # رسم الإطار الخارجي النابض (دائماً موجود)
         ring_pen = QPen(QColor(r, g, b, min(255, a + 40)), 4.0) 
         painter.setPen(ring_pen)
         painter.setBrush(Qt.NoBrush) 
         painter.drawRoundedRect(rect, radius, radius)
 
-        # 🌟 الشروط الذكية للرسم الداخلي (تفادي الزحمة البصرية)
-        # لا نرسم أي شيء داخل الكبسولة إذا كانت تعرض نصاً (user_text, speaking, downloading, translation_ready)
         if self.state in ["user_text", "speaking", "downloading", "translation_ready"]:
-            return # إنهاء الرسم هنا، ليظهر النص فقط بوضوح تام
+            return 
 
         cx = rect.center().x()
         cy = rect.center().y()
 
-        # حالة الـ idle
         if self.rect().width() < 145 and self.state == "idle":
             if self.clipboard_items:
                 latest_item = self.clipboard_items[-1]
@@ -1015,7 +997,6 @@ class DynamicPill(QWidget):
                     rect_timer = QRectF(rect.left(), rect.top(), rect.width(), rect.height())
                     painter.drawText(rect_timer, Qt.AlignCenter, self.active_timer_text)
                 else:
-                    # رسم الأعمدة في حالة السكون
                     bar_width = 4.0  
                     spacing = 10.0   
                     h1 = 10.0 + 4.0 * math.sin(self.pulse_step)
@@ -1028,7 +1009,6 @@ class DynamicPill(QWidget):
                     painter.drawLine(int(cx), int(cy - h2/2), int(cx), int(cy + h2/2))
                     painter.drawLine(int(cx + spacing), int(cy - h3/2), int(cx + spacing), int(cy + h3/2))
         
-        # حالة الاستماع (listening) أو الـ options/gallery
         elif self.state in ["listening", "options", "gallery"]:
             if self.state == "listening":
                 bar_width = 4.0  
@@ -1238,10 +1218,8 @@ class JarvisWorker(QThread):
         super().__init__()
         self.awaiting_command = False
         self.pending_power_action = None
-        self.was_media_playing = False # 🌟 متغير ذاكرة الوسائط
+        self.was_media_playing = False
         
-        # 🚀 [الجديد]: نقل الصوت المباشر إلى الذاكرة ليعمل بـ (0ms Latency)
-        # نستخدم PyAudio (الذي يستخدمه Kokoro) لتشغيل الملف داخلياً دون اللجوء للأوامر الخارجية
         self.pa = pyaudio.PyAudio() 
         
         mhm_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mhm.wav")
@@ -1253,12 +1231,9 @@ class JarvisWorker(QThread):
                 if len(data.shape) > 1:
                     data = data[:, 0]
                 
-                # 🚀 [السرعة القصوى]: إزالة أي فراغ صامت من بداية الملف برمجياً (Auto-Trim)
-                threshold = 0.01 # عتبة الصوت (تجاهل أي ضجيج خفيف أو صمت)
-                start_idx = np.argmax(np.abs(data) > threshold) # البحث عن أول لحظة يبدأ فيها الصوت الفعلي
-                data = data[start_idx:] # قص كل الصمت الذي يسبق هذا المؤشر
-                
-                # حذفنا خدعة الوسادة الصامتة ليكون التشغيل في 0 ملي ثانية!
+                threshold = 0.01 
+                start_idx = np.argmax(np.abs(data) > threshold) 
+                data = data[start_idx:] 
                 
                 self.mhm_audio_data = data.tobytes()
                 self.mhm_fs = fs
@@ -1501,7 +1476,6 @@ class JarvisWorker(QThread):
                 if not self.awaiting_command and not self.pending_power_action:
                     self.ui_update.emit("idle", "")
                     
-                    # نستخدم المايكروفون عبر self.pa
                     mic_stream = self.pa.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True, frames_per_buffer=1280)
                     owwModel.reset()
                     
@@ -1607,13 +1581,13 @@ class JarvisWorker(QThread):
                             
                             if not self.awaiting_command:
                                 self.resume_background_media()
-                        else:
-                            self.awaiting_command = False
-                            self.resume_background_media()
                     else:
                         self.awaiting_command = False
                         self.resume_background_media()
-                        
+                else:
+                    self.awaiting_command = False
+                    self.resume_background_media()
+                    
         except Exception as e:
             print(f"Error: {e}")
         finally:
@@ -1700,8 +1674,6 @@ class JarvisWorker(QThread):
         
         return OllamaInterface.ask(user_input) 
 
-    # 🚀 دالة النطق الخارقة الجديدة (Native Python Audio)
-    # لا مزيد من أوامر aplay أو الروابط المعطلة، كل الصوت يعمل داخل الرام
     def speak(self, text: str, display_text: str = None, update_ui: bool = True):
         if display_text is None:
             display_text = text
@@ -1709,27 +1681,23 @@ class JarvisWorker(QThread):
         clean_text = re.sub(r'[^\w\s.,!?\']', '', text).strip()
         if not clean_text: return
         
-        # 🌟 1. اعتراض الملف الصوتي (الهمهمة) ليشتغل بـ (0ms Latency)
         if clean_text.lower() in ["mhm", "mhm?"]:
             if update_ui:
                 self.ui_update.emit("speaking", display_text + "?" if not display_text.endswith("?") else display_text)
             
             if self.mhm_audio_data is not None:
-                # نفتح قناة الصوت من البايثون مباشرة ونصب فيها الملف
                 stream = self.pa.open(format=pyaudio.paFloat32, channels=1, rate=self.mhm_fs, output=True)
                 stream.write(self.mhm_audio_data)
                 stream.stop_stream()
                 stream.close()
             return
 
-        # 🌟 2. توليد صوت Kokoro وتشغيله أيضاً برمجياً بدون aplay وبدون كتابة ملفات مؤقتة!
         if getattr(self, 'has_kokoro', False):
             try:
                 samples, sample_rate = self.kokoro.create(clean_text, voice="af_sarah", speed=1.0, lang="en-us")
                 if update_ui:
                     self.ui_update.emit("speaking", display_text)
                 
-                # تحويل الصوت المتولد إلى Byte Array وتشغيله فوراً وبنفس جودة الـ Native
                 stream = self.pa.open(format=pyaudio.paFloat32, channels=1, rate=sample_rate, output=True)
                 stream.write(samples.astype(np.float32).tobytes())
                 stream.stop_stream()
