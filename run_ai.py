@@ -475,32 +475,52 @@ class OllamaInterface:
             return "Sir, Ollama is currently offline."
             
     @staticmethod
-    def translate(text: str) -> str:
-        MODEL_NAME = "qwen2.5:1.5b"
-        url = "http://localhost:11434/api/chat"
-        
-        if re.search(r'[\u0600-\u06FF]', text):
-            target_language = "English"
-        else:
-            target_language = "Arabic"
-            
-        system_prompt = f"You are a professional translator. Translate the given text into {target_language}. Return ONLY the exact translated text without any quotes, notes, or introductions."
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": text}
-        ]
-        try:
-            options = {"num_thread": 3}
-            response = requests.post(url, json={"model": MODEL_NAME, "messages": messages, "stream": False, "options": options}, timeout=60)
-            if response.status_code == 200:
-                return response.json().get("message", {}).get("content", "").strip()
-            return "Translation failed."
-        except Exception: 
-            return "Ollama is currently offline."
+    class OllamaInterface:
+     chat_history = []
+    _translation_ready = False # 🌟 متغير للتحقق من جاهزية القواميس المحلية
+    
+    # ... (دالة ask ودالة clear_memory تبقى كما هي) ...
 
     @staticmethod
-    def clear_memory(): 
-        OllamaInterface.chat_history = []
+    def translate(text: str) -> str:
+        try:
+            import argostranslate.package
+            import argostranslate.translate
+        except ImportError:
+            return "Sir, please install the offline translator via terminal: pip install argostranslate"
+
+        # 🌟 فحص وتنزيل القواميس (يحدث لمرة واحدة فقط في العمر)
+        if not OllamaInterface._translation_ready:
+            installed_packages = argostranslate.package.get_installed_packages()
+            has_en_ar = any(p.from_code == 'en' and p.to_code == 'ar' for p in installed_packages)
+            has_ar_en = any(p.from_code == 'ar' and p.to_code == 'en' for p in installed_packages)
+            
+            if not (has_en_ar and has_ar_en):
+                print("📥 [نظام الترجمة] جاري تحميل القواميس المحلية (تعمل لمرة واحدة فقط)...")
+                argostranslate.package.update_package_index()
+                available_packages = argostranslate.package.get_available_packages()
+                
+                if not has_en_ar:
+                    pkg = next(filter(lambda x: x.from_code == 'en' and x.to_code == 'ar', available_packages), None)
+                    if pkg: argostranslate.package.install_from_path(pkg.download())
+                
+                if not has_ar_en:
+                    pkg = next(filter(lambda x: x.from_code == 'ar' and x.to_code == 'en', available_packages), None)
+                    if pkg: argostranslate.package.install_from_path(pkg.download())
+                
+                print("✅ [نظام الترجمة] تمت تهيئة الترجمة الأوفلاين بنجاح!")
+                
+            OllamaInterface._translation_ready = True
+
+        # 🌟 تنفيذ الترجمة اللحظية (0ms)
+        try:
+            if re.search(r'[\u0600-\u06FF]', text):
+                return argostranslate.translate.translate(text, 'ar', 'en')
+            else:
+                return argostranslate.translate.translate(text, 'en', 'ar')
+        except Exception as e:
+            print(f"⚠️ Offline Translation Error: {e}")
+            return "Translation failed."
 
 # ==========================================
 # 3. محرك الواجهة الرسومية والتفاعلات اليدوية
