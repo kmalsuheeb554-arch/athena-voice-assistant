@@ -13,9 +13,10 @@ import pyaudio
 import numpy as np
 import torch
 import soundfile as sf 
-
-# 🌟 استدعاء المكتبات الذكية للسرعة واللفظ
+import glob
 import jellyfish
+# 🌟 استدعاء المكتبات الذكية للسرعة واللفظ
+
 from rapidfuzz import process, fuzz
 
 from typing import Tuple, Any
@@ -192,34 +193,58 @@ class CommandHandler:
 # ==========================================
 # 2. منفذ الإجراءات (Actions)
 # ==========================================
+
+
 class Actions:
-    @staticmethod
-    def run_cmd(cmd: str) -> bool:
-        return os.system(f"{cmd} > /dev/null 2>&1") == 0
+    # 🌟 متغير الكاش لحفظ التطبيقات في الرام (RAM)
+    _gui_apps_cache = None 
 
     @staticmethod
-    def network(device: str, state: str) -> str:
-        if device == "wifi":
-            Actions.run_cmd("nmcli radio wifi on" if state == "on" else "nmcli radio wifi off")
-            return f"Wi-Fi turned {state}."
-        elif device == "hotspot":
-            Actions.run_cmd("nmcli device wifi hotspot" if state == "on" else "nmcli connection down Hotspot")
-            return f"Hotspot turned {state}."
-        elif device == "airplane":
-            Actions.run_cmd("rfkill block all" if state == "on" else "rfkill unblock all")
-            return f"Airplane mode turned {state}."
-        elif device == "bluetooth":
-            Actions.run_cmd("rfkill unblock bluetooth" if state == "on" else "rfkill block bluetooth")
-            return f"Bluetooth turned {state}."
-        return "Failed to change network settings."
+    def get_installed_gui_apps():
+        # 1. التدخل الذكي: إذا كان الكاش مليئاً، أرجعه فوراً (السرعة 0ms)
+        if Actions._gui_apps_cache is not None:
+            return Actions._gui_apps_cache
+
+        # 2. إذا كانت هذه أول مرة، نقوم بقراءة القرص الصلب
+        apps = {}
+        # نبحث في مسار النظام ومسار المستخدم
+        directories = [
+            '/usr/share/applications',
+            os.path.expanduser('~/.local/share/applications')
+        ]
+        
+        for directory in directories:
+            if not os.path.exists(directory):
+                continue
+                
+            for filepath in glob.glob(os.path.join(directory, '*.desktop')):
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                        # تجاهل التطبيقات المخفية
+                        if 'NoDisplay=true' in content:
+                            continue
+                        
+                        name_line = next((line for line in content.split('\n') if line.startswith('Name=')), None)
+                        exec_line = next((line for line in content.split('\n') if line.startswith('Exec=')), None)
+                        
+                        if name_line and exec_line:
+                            name = name_line.split('=')[1].strip().lower()
+                            # تنظيف مسار التشغيل من الرموز الإضافية مثل %U أو %F
+                            command = exec_line.split('=')[1].strip().split(' %')[0]
+                            apps[name] = command
+                except Exception:
+                    continue # تجاهل الملفات المعطوبة بأمان
+                    
+        # 3. حفظ النتيجة في الكاش للأبد طوال فترة تشغيل أثينا
+        Actions._gui_apps_cache = apps
+        return apps
 
     @staticmethod
-    def display_settings(action: str, state: str):
-        if action == "nightlight":
-            val = "true" if state == "on" else "false"
-            Actions.run_cmd(f"gsettings set org.gnome.settings-daemon.plugins.color night-light-enabled {val}")
-            return f"Night light turned {state}."
-        return "Failed to change display settings."
+    def open_app(app: str):
+        # الآن هذه الدالة ستستدعي الكاش فوراً وبدون أي بطء!
+        gui_apps = Actions.get_installed_gui_apps()
+        # ... (باقي كود فتح التطبيق الخاص بك كما هو) ...
 
     @staticmethod
     def music(action: str, song_name: str = None):
